@@ -1,0 +1,243 @@
+{
+  "name": "NQ Post-Close Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [ { "field": "cronExpression", "expression": "45 17 * * 1-5" } ] }
+      },
+      "id": "11111111-1111-1111-1111-111111111111",
+      "name": "Schedule 17:45 ET",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "runType", "value": "postclose", "type": "string" },
+            { "id": "a2", "name": "tickers", "value": "AAPL,MSFT,NVDA,AMZN,META,GOOGL,GOOG,AVGO,TSLA,COST", "type": "string" },
+            { "id": "a3", "name": "windowHours", "value": 18, "type": "number" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "22222222-2222-2222-2222-222222222222",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT external_id FROM seen_items WHERE seen_at > NOW() - INTERVAL '7 days'",
+        "options": {}
+      },
+      "id": "44444444-4444-4444-4444-444444444444",
+      "name": "Load Seen IDs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [600, 300],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": { "id": "postgres-main", "name": "Postgres (n8n DB)" }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Fetch all sources in parallel, return normalized items.\nconst cfg = $('Config').first().json;\nconst runType = cfg.runType;\nconst tickers = cfg.tickers.split(',');\nconst windowMs = cfg.windowHours * 3600 * 1000;\nconst now = Date.now();\nconst since = now - windowMs;\nconst todayISO = new Date(now).toISOString().slice(0, 10);\n\nconst FINNHUB = $env.FINNHUB_API_KEY;\nconst FRED = $env.FRED_API_KEY;\nconst EIA = $env.EIA_API_KEY;\nconst MARKETAUX = $env.MARKETAUX_API_KEY;\nconst SEC_UA = 'nq-digest hunter547@gmail.com';\n\nconst CIK = {\n  AAPL: '0000320193', MSFT: '0000789019', NVDA: '0001045810',\n  AMZN: '0001018724', META: '0001326801', GOOGL: '0001652044',\n  GOOG: '0001652044', AVGO: '0001730168', TSLA: '0001318605',\n  COST: '0000909832'\n};\n\nconst helpers = this.helpers;\nasync function safeFetch(url, opts = {}) {\n  try {\n    return await helpers.httpRequest({ method: 'GET', url, headers: opts.headers || {}, json: true, timeout: 15000 });\n  } catch (e) { return null; }\n}\n\nasync function earningsCal() {\n  if (!FINNHUB) return [];\n  const fromISO = new Date(now - 86400000).toISOString().slice(0, 10);\n  const toISO = new Date(now + 3 * 86400000).toISOString().slice(0, 10);\n  const j = await safeFetch(`https://finnhub.io/api/v1/calendar/earnings?from=${fromISO}&to=${toISO}&token=${FINNHUB}`);\n  if (!j?.earningsCalendar) return [];\n  return j.earningsCalendar.filter(e => tickers.includes(e.symbol)).map(e => ({\n    source: 'finnhub_earnings',\n    external_id: `${e.symbol}_${e.date}_${e.hour}`,\n    category: 'earnings',\n    ticker: e.symbol,\n    title: `${e.symbol} earnings ${e.hour === 'bmo' ? 'pre-market' : e.hour === 'amc' ? 'after-close' : e.date}`,\n    body: `EPS est ${e.epsEstimate ?? 'n/a'}, rev est ${e.revenueEstimate ?? 'n/a'}. Actual EPS ${e.epsActual ?? 'pending'}, actual rev ${e.revenueActual ?? 'pending'}.`,\n    ts: e.date,\n    url: `https://finance.yahoo.com/quote/${e.symbol}`\n  }));\n}\n\nasync function edgarFilings() {\n  const out = [];\n  for (const [ticker, cik] of Object.entries(CIK)) {\n    if (!tickers.includes(ticker)) continue;\n    const j = await safeFetch(`https://data.sec.gov/submissions/CIK${cik}.json`, { headers: { 'User-Agent': SEC_UA, 'Accept': 'application/json' } });\n    if (!j?.filings?.recent) continue;\n    const r = j.filings.recent;\n    const edgarSince = now - 5 * 86400000;\n    for (let i = 0; i < r.form.length && i < 30; i++) {\n      if (r.form[i] !== '8-K') continue;\n      const filedAt = new Date(r.filingDate[i]).getTime();\n      if (filedAt < edgarSince) continue;\n      const accNo = r.accessionNumber[i].replace(/-/g, '');\n      out.push({\n        source: 'sec_edgar', external_id: r.accessionNumber[i], category: 'earnings', ticker,\n        title: `${ticker} 8-K filed ${r.filingDate[i]}`,\n        body: r.primaryDocDescription[i] || '8-K filing',\n        ts: r.filingDate[i],\n        url: `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${accNo}/${r.primaryDocument[i]}`\n      });\n    }\n  }\n  return out;\n}\n\nasync function fredReleases() {\n  if (!FRED) return [];\n  const series = ['CPIAUCSL', 'PCEPI', 'PAYEMS', 'UNRATE', 'FEDFUNDS', 'GDPC1'];\n  const out = [];\n  for (const s of series) {\n    const j = await safeFetch(`https://api.stlouisfed.org/fred/series/observations?series_id=${s}&api_key=${FRED}&file_type=json&sort_order=desc&limit=2`);\n    if (!j?.observations?.length) continue;\n    const o = j.observations[0]; const prev = j.observations[1];\n    out.push({\n      source: 'fred', external_id: `${s}_${o.date}`, category: 'macro', ticker: null,\n      title: `${s}: ${o.value} (as of ${o.date})`,\n      body: prev ? `Prev ${prev.value} on ${prev.date}` : '',\n      ts: o.date, url: `https://fred.stlouisfed.org/series/${s}`\n    });\n  }\n  return out;\n}\n\nasync function treasuryAuctions() {\n  const j = await safeFetch('https://www.treasurydirect.gov/TA_WS/securities/announced?format=json');\n  if (!Array.isArray(j)) return [];\n  return j.slice(0, 8).map(a => ({\n    source: 'treasury', external_id: a.cusip, category: 'macro', ticker: null,\n    title: `Treasury auction: ${a.securityType} ${a.securityTerm} on ${a.auctionDate}`,\n    body: `Issue ${a.issueDate}, offering ${a.offeringAmount || 'TBA'}`,\n    ts: a.auctionDate, url: 'https://www.treasurydirect.gov/auctions/upcoming/'\n  }));\n}\n\nasync function eiaPetroleum() {\n  if (!EIA) return [];\n  const url = `https://api.eia.gov/v2/petroleum/stoc/wstk/data/?api_key=${EIA}&frequency=weekly&data[0]=value&facets[duoarea][]=NUS&sort[0][column]=period&sort[0][direction]=desc&length=200`;\n  const j = await safeFetch(url);\n  const rows = j?.response?.data;\n  if (!rows?.length) return [];\n  const KEY = /^U\\.S\\. Ending Stocks of (Crude Oil( and Lease Condensate)?|(Total )?(Motor )?Gasoline|Distillate Fuel Oil)$/i;\n  const seen = new Set();\n  return rows\n    .filter(r => KEY.test(r['series-description']))\n    .filter(r => { const k = r['series-description']; if (seen.has(k)) return false; seen.add(k); return true; })\n    .slice(0, 4)\n    .map(r => ({\n      source: 'eia', external_id: `${r['series-description']}_${r.period}`, category: 'cross_asset', ticker: null,\n      title: `EIA: ${r['series-description']} ${r.period}`,\n      body: `${r.value} ${r.units}`,\n      ts: r.period, url: 'https://www.eia.gov/petroleum/supply/weekly/'\n    }));\n}\n\nconst NEWS_RELEVANT = /\\b(apple|aapl|microsoft|msft|nvidia|nvda|amazon|amzn|meta|alphabet|google|googl|broadcom|avgo|tesla|tsla|costco|cost|netflix|nflx|fed|fomc|powell|rate (cut|hike|decision)|interest rate|inflation|cpi|pce|jobs report|payroll|nonfarm|unemployment|gdp|treasury yield|10-year|nasdaq|qqq|s&p ?500|spx|spy|futures|crude|opec|wti|brent|natural gas|semiconductor|chip(s|maker)|ai (chip|stock|boom|trade)|tariff|trade war|china (trade|export|chip)|sanction|recession|dollar index|dxy|vix|earnings (beat|miss|guidance|outlook)|guidance (cut|raised)|hawkish|dovish|fed minutes|jackson hole|debt ceiling|government shutdown)\\b/i;\nasync function finnhubNews() {\n  if (!FINNHUB) return [];\n  const j = await safeFetch(`https://finnhub.io/api/v1/news?category=general&token=${FINNHUB}`);\n  if (!Array.isArray(j)) return [];\n  return j\n    .filter(n => n.datetime * 1000 >= since)\n    .filter(n => NEWS_RELEVANT.test((n.headline || '') + ' ' + (n.summary || '')))\n    .slice(0, 20)\n    .map(n => ({\n      source: 'finnhub_news', external_id: String(n.id), category: 'news', ticker: null,\n      title: n.headline, body: n.summary || '',\n      ts: new Date(n.datetime * 1000).toISOString(), url: n.url\n    }));\n}\n\nasync function marketauxNews() {\n  if (!MARKETAUX) return [];\n  const url = `https://api.marketaux.com/v1/news/all?countries=us&language=en&published_after=${new Date(since).toISOString()}&api_token=${MARKETAUX}&limit=20`;\n  const j = await safeFetch(url);\n  if (!j?.data) return [];\n  return j.data.map(n => ({\n    source: 'marketaux', external_id: n.uuid, category: 'news',\n    ticker: (n.entities || []).map(e => e.symbol).filter(Boolean).join(',') || null,\n    title: n.title, body: n.description || '',\n    ts: n.published_at, url: n.url\n  }));\n}\n\nasync function yahooQuotes() {\n  const symbols = ['^VIX', '^VVIX', 'DX-Y.NYB', '^TNX', 'NQ=F', 'ES=F'];\n  const out = [];\n  await Promise.all(symbols.map(async (sym) => {\n    const j = await safeFetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=2d&interval=1d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });\n    const r = j?.chart?.result?.[0];\n    if (!r) return;\n    const meta = r.meta || {};\n    const last = meta.regularMarketPrice;\n    const prev = meta.chartPreviousClose ?? meta.previousClose;\n    if (last == null) return;\n    const pct = (prev && prev !== 0) ? ((last - prev) / prev * 100) : null;\n    const name = meta.shortName || meta.longName || sym;\n    out.push({\n      source: 'yahoo', external_id: `${sym}_${todayISO}_${runType}`, category: 'cross_asset', ticker: sym,\n      title: `${name}: ${Number(last).toFixed(2)}${pct !== null ? ` (${pct.toFixed(2)}%)` : ''}`,\n      body: `Prev close ${prev != null ? Number(prev).toFixed(2) : 'n/a'}.`,\n      ts: new Date((meta.regularMarketTime || Math.floor(Date.now()/1000)) * 1000).toISOString(),\n      url: `https://finance.yahoo.com/quote/${encodeURIComponent(sym)}`\n    });\n  }));\n  return out;\n}\n\nconst results = await Promise.allSettled([earningsCal(), edgarFilings(), fredReleases(), treasuryAuctions(), eiaPetroleum(), finnhubNews(), marketauxNews(), yahooQuotes()]);\nconst items = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);\nreturn items.map(json => ({ json }));\n"
+      },
+      "id": "33333333-3333-3333-3333-333333333333",
+      "name": "Fetch All Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const items = $('Fetch All Sources').all().map(i => i.json);\nconst seen = new Set($('Load Seen IDs').all().map(i => i.json.external_id));\nconst fresh = items.filter(it => !seen.has(it.external_id));\nreturn fresh.map(json => ({ json }));\n"
+      },
+      "id": "55555555-5555-5555-5555-555555555555",
+      "name": "Filter Fresh",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "public", "mode": "list" },
+        "table": { "__rl": true, "value": "seen_items", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": { "source": "={{ $json.source }}", "external_id": "={{ $json.external_id }}" },
+          "matchingColumns": ["source", "external_id"]
+        },
+        "options": { "skipOnConflict": true }
+      },
+      "id": "66666666-6666-6666-6666-666666666666",
+      "name": "Persist Seen",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1200, 300],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": { "id": "postgres-main", "name": "Postgres (n8n DB)" }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Build user prompt asking Claude for STRUCTURED JSON.\nconst items = $('Fetch All Sources').all().map(i => i.json);\nconst runType = $('Config').first().json.runType;\n\nconst bucket = (cat) => items.filter(i => i.category === cat).slice(0, 30);\nconst earnings = bucket('earnings');\nconst macro = bucket('macro');\nconst news = bucket('news');\nconst cross = bucket('cross_asset');\n\nconst fmt = (arr) => arr.length\n  ? arr.map(i => `- [${i.source}${i.ticker ? ' ' + i.ticker : ''}] ${i.title}${i.body ? ' — ' + i.body.slice(0, 280) : ''}`).join('\\n')\n  : '(none)';\n\nconst userPrompt = `You are summarizing market signals for a Nasdaq-100 futures (NQ) trader.\nRun: ${runType.toUpperCase()} (${runType === 'premarket' ? '9:15 ET, before US cash open' : '17:45 ET, after US cash close'}).\n\nReturn ONLY valid JSON matching this exact shape — no preamble, no markdown fences, no commentary:\n{\n  \"earnings\": [\"one-line bullet\", ...],\n  \"macro\": [\"one-line bullet\", ...],\n  \"news\": [\"one-line bullet\", ...],\n  \"cross_asset\": [\"one-line bullet\", ...],\n  \"bias_read\": \"One sentence: net lean for NQ (bullish/bearish/neutral) and the single biggest risk to that lean.\"\n}\n\nRules: Each bullet is one line, specific with numbers when given, no fluff, no caveats, no disclaimers. If a category has nothing material, return an empty array. The bias_read MUST be a single sentence.\n\n=== EARNINGS ===\n${fmt(earnings)}\n\n=== MACRO ===\n${fmt(macro)}\n\n=== NEWS ===\n${fmt(news)}\n\n=== CROSS-ASSET ===\n${fmt(cross)}\n`;\n\nreturn [{ json: { userPrompt, runType, itemCount: items.length } }];\n"
+      },
+      "id": "77777777-7777-7777-7777-777777777777",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 1500,\n  \"system\": \"You are a disciplined market analyst. Return only valid JSON as instructed. No prose outside the JSON.\",\n  \"messages\": [ { \"role\": \"user\", \"content\": {{ JSON.stringify($json.userPrompt) }} } ]\n}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "88888888-8888-8888-8888-888888888888",
+      "name": "Claude Summarize",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1600, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Parse Claude's JSON response.\nconst resp = $input.first().json;\nconst text = (resp.content || []).map(c => c.text || '').join('\\n').trim();\nconst cleaned = text.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```\\s*$/, '').trim();\nlet parsed;\ntry { parsed = JSON.parse(cleaned); }\ncatch (e) {\n  const m = cleaned.match(/\\{[\\s\\S]*\\}/);\n  parsed = m ? JSON.parse(m[0]) : { earnings: [], macro: [], news: [], cross_asset: [], bias_read: text };\n}\nfor (const k of ['earnings','macro','news','cross_asset']) if (!Array.isArray(parsed[k])) parsed[k] = [];\nif (typeof parsed.bias_read !== 'string') parsed.bias_read = '';\n\nconst runType = $('Build Prompt').first().json.runType;\nconst itemCount = $('Build Prompt').first().json.itemCount;\nconst items = $('Fetch All Sources').all().map(i => i.json);\nreturn [{ json: { ...parsed, runType, itemCount, items } }];\n"
+      },
+      "id": "99999999-9999-9999-9999-999999999999",
+      "name": "Parse Claude",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Build a styled HTML document and emit it as binary for Gotenberg.\nconst d = $input.first().json;\nconst { earnings, macro, news, cross_asset, bias_read, runType, itemCount, items } = d;\n\nconst dateStr = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });\nconst headerLabel = runType === 'premarket' ? 'PRE-MARKET DIGEST' : 'POST-CLOSE DIGEST';\nconst timeLabel = runType === 'premarket' ? '9:15 AM ET' : '5:45 PM ET';\nconst esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');\n\nconst CAT = {\n  earnings:    { label: 'Earnings',    color: '#2563eb', bullets: earnings },\n  macro:       { label: 'Macro',       color: '#7c3aed', bullets: macro },\n  news:        { label: 'News',        color: '#059669', bullets: news },\n  cross_asset: { label: 'Cross-Asset', color: '#ea580c', bullets: cross_asset }\n};\n\nconst summaryCard = (key) => {\n  const c = CAT[key];\n  if (!c.bullets.length) return '';\n  return `<section class=\"card\" style=\"--accent:${c.color}\">\n    <header><span class=\"badge\">${c.label}</span><span class=\"count\">${c.bullets.length}</span></header>\n    <ul>${c.bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>\n  </section>`;\n};\n\nconst itemsByCat = {};\nfor (const k of Object.keys(CAT)) itemsByCat[k] = items.filter(i => i.category === k);\n\nconst rawCard = (key) => {\n  const c = CAT[key]; const list = itemsByCat[key];\n  if (!list.length) return '';\n  return `<section class=\"raw\" style=\"--accent:${c.color}\">\n    <h4><span class=\"dot\"></span>${c.label} <span class=\"n\">${list.length} items</span></h4>\n    <ul>${list.map(it => `<li>\n      <div class=\"t\">${it.ticker ? `<span class=\"tk\">${esc(it.ticker)}</span>` : ''}${esc(it.title)}</div>\n      ${it.body ? `<div class=\"b\">${esc(it.body)}</div>` : ''}\n      <div class=\"s\">${esc(it.source)}${it.url ? ` · <a href=\"${esc(it.url)}\">link</a>` : ''}</div>\n    </li>`).join('')}</ul>\n  </section>`;\n};\n\nconst html = `<!doctype html><html><head><meta charset=\"utf-8\"><title>${headerLabel} — ${esc(dateStr)}</title>\n<style>\n  @page { size: Letter; margin: 0.55in; }\n  * { box-sizing: border-box; }\n  html,body { padding:0; margin:0; }\n  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', system-ui, sans-serif; color:#0f172a; line-height:1.45; font-size:10pt; -webkit-print-color-adjust:exact; print-color-adjust:exact; }\n  .hero { padding:30px 32px 26px; background:linear-gradient(135deg,#0f172a 0%,#1e293b 60%,#312e81 100%); color:#fff; border-radius:16px; margin-bottom:22px; }\n  .hero .eyebrow { font-size:9pt; letter-spacing:0.22em; text-transform:uppercase; color:#94a3b8; margin-bottom:10px; font-weight:600; }\n  .hero h1 { font-size:28pt; font-weight:800; margin:0; letter-spacing:-0.025em; }\n  .hero .sub { margin-top:10px; font-size:10.5pt; color:#cbd5e1; }\n  .bias { padding:16px 20px; background:linear-gradient(90deg,#fef3c7 0%,#fde68a 100%); border-left:4px solid #f59e0b; border-radius:10px; margin-bottom:24px; font-size:10.5pt; color:#78350f; }\n  .bias .label { font-size:8.5pt; font-weight:700; letter-spacing:0.16em; color:#92400e; text-transform:uppercase; margin-bottom:6px; }\n  .bias .text { font-weight:500; line-height:1.5; }\n  .section-title { font-size:9.5pt; font-weight:700; letter-spacing:0.18em; text-transform:uppercase; color:#64748b; margin:28px 0 12px; padding-bottom:6px; border-bottom:1px solid #e2e8f0; }\n  .grid { display:flex; flex-direction:column; gap:12px; }\n  .card { border:1px solid #e2e8f0; border-radius:12px; padding:14px 16px; border-top:3px solid var(--accent); background:#fff; }\n  .card header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }\n  .card .badge { font-size:9pt; font-weight:700; letter-spacing:0.12em; text-transform:uppercase; color:var(--accent); }\n  .card .count { font-size:8pt; color:#64748b; background:#f1f5f9; padding:2px 9px; border-radius:999px; font-weight:600; }\n  .card ul { padding-left:18px; margin:0; }\n  .card li { margin-bottom:5px; line-height:1.5; }\n  .raw { border:1px solid #e2e8f0; border-radius:10px; padding:14px 16px; background:#fff; margin-bottom:10px; }\n  .raw h4 { display:flex; align-items:center; gap:8px; font-size:9.5pt; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:#0f172a; margin:0 0 10px; }\n  .raw h4 .dot { width:8px; height:8px; border-radius:50%; background:var(--accent); display:inline-block; }\n  .raw h4 .n { font-size:8pt; color:#94a3b8; font-weight:500; letter-spacing:0; text-transform:none; margin-left:auto; }\n  .raw ul { padding:0; margin:0; list-style:none; }\n  .raw li { padding:8px 0; border-top:1px solid #f1f5f9; }\n  .raw li:first-child { border-top:0; padding-top:0; }\n  .raw .t { font-weight:600; font-size:9.5pt; color:#0f172a; }\n  .raw .tk { display:inline-block; font-family:'SF Mono',Menlo,monospace; font-size:8pt; font-weight:700; color:var(--accent); background:rgba(0,0,0,0.04); padding:1px 6px; border-radius:4px; margin-right:6px; }\n  .raw .b { font-size:9pt; color:#475569; margin-top:3px; }\n  .raw .s { font-size:7.5pt; color:#94a3b8; margin-top:4px; font-family:'SF Mono',Menlo,monospace; }\n  .raw .s a { color:#94a3b8; text-decoration:none; }\n  footer { margin-top:30px; padding-top:14px; border-top:1px solid #e2e8f0; font-size:8pt; color:#94a3b8; text-align:center; letter-spacing:0.05em; }\n</style></head><body>\n  <div class=\"hero\"><div class=\"eyebrow\">${headerLabel} · ${timeLabel}</div><h1>NQ Futures Daily</h1><div class=\"sub\">${esc(dateStr)}</div></div>\n  <div class=\"bias\"><div class=\"label\">Bias Read</div><div class=\"text\">${esc(bias_read || '—')}</div></div>\n  <div class=\"section-title\">Summary</div>\n  <div class=\"grid\">${['earnings','macro','news','cross_asset'].map(summaryCard).join('')}</div>\n  <div class=\"section-title\">Raw Items</div>\n  ${['earnings','macro','news','cross_asset'].map(rawCard).join('')}\n  <footer>${itemCount} items scanned · generated ${new Date().toISOString().slice(0,16).replace('T',' ')} UTC</footer>\n</body></html>`;\n\nconst pdfName = `NQ-${runType}-${new Date().toISOString().slice(0,10)}`;\nreturn [{\n  json: { runType, biasRead: bias_read, dateStr, headerLabel, pdfName, itemCount },\n  binary: { indexHtml: { data: Buffer.from(html).toString('base64'), mimeType: 'text/html', fileName: 'index.html' } }\n}];\n"
+      },
+      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "Build PDF HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://gotenberg:3000/forms/chromium/convert/html",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Gotenberg-Output-Filename", "value": "={{ $('Build PDF HTML').first().json.pdfName }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "parameterType": "formBinaryData", "name": "files", "inputDataFieldName": "indexHtml" }
+          ]
+        },
+        "options": {
+          "response": { "response": { "responseFormat": "file", "outputPropertyName": "data" } },
+          "timeout": 60000
+        }
+      },
+      "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name": "Gotenberg Convert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendDocument",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{ $env.TELEGRAM_CHAT_ID }}" },
+            { "name": "caption", "value": "=<b>{{ $('Build PDF HTML').first().json.headerLabel }}</b>\n{{ $('Build PDF HTML').first().json.dateStr }}" },
+            { "name": "parse_mode", "value": "HTML" },
+            { "parameterType": "formBinaryData", "name": "document", "inputDataFieldName": "data" }
+          ]
+        },
+        "options": { "timeout": 60000 }
+      },
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "name": "Send PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2400, 200]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Build the short bias-read text message.\nconst d = $input.first().json;\nconst esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst header = d.runType === 'premarket' ? 'PRE-MARKET 9:15 ET' : 'POST-CLOSE 17:45 ET';\nconst dateStr = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', weekday: 'short' });\nconst out = `<b>${esc(header)}</b> — ${esc(dateStr)}\\n<b>Bias:</b> ${esc(d.bias_read || '—')}`;\nreturn [{ json: { text: out } }];\n"
+      },
+      "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "name": "Format Bias Read",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": {{ JSON.stringify($env.TELEGRAM_CHAT_ID) }},\n  \"text\": {{ JSON.stringify($json.text) }},\n  \"parse_mode\": \"HTML\",\n  \"disable_web_page_preview\": true\n}",
+        "options": {}
+      },
+      "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      "name": "Send Bias Read",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 400]
+    }
+  ],
+  "connections": {
+    "Schedule 17:45 ET":  { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+    "Config":            { "main": [[{ "node": "Load Seen IDs", "type": "main", "index": 0 }]] },
+    "Load Seen IDs":     { "main": [[{ "node": "Fetch All Sources", "type": "main", "index": 0 }]] },
+    "Fetch All Sources": { "main": [[{ "node": "Filter Fresh", "type": "main", "index": 0 }]] },
+    "Filter Fresh":      { "main": [[{ "node": "Persist Seen", "type": "main", "index": 0 }]] },
+    "Persist Seen":      { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
+    "Build Prompt":      { "main": [[{ "node": "Claude Summarize", "type": "main", "index": 0 }]] },
+    "Claude Summarize":  { "main": [[{ "node": "Parse Claude", "type": "main", "index": 0 }]] },
+    "Parse Claude":      { "main": [[
+      { "node": "Build PDF HTML", "type": "main", "index": 0 },
+      { "node": "Format Bias Read", "type": "main", "index": 0 }
+    ]] },
+    "Build PDF HTML":    { "main": [[{ "node": "Gotenberg Convert", "type": "main", "index": 0 }]] },
+    "Gotenberg Convert": { "main": [[{ "node": "Send PDF", "type": "main", "index": 0 }]] },
+    "Format Bias Read":  { "main": [[{ "node": "Send Bias Read", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "America/New_York" },
+  "tags": [{ "name": "nq-digest" }]
+}
