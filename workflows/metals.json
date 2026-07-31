@@ -232,7 +232,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://gotenberg:3000/forms/chromium/convert/html",
+        "url": "={{ $env.GOTENBERG_URL || 'http://gotenberg:3000' }}/forms/chromium/convert/html",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [

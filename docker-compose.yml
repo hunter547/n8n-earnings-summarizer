@@ -2,6 +2,8 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -27,6 +29,7 @@ services:
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_PORT: 5432
+      GOTENBERG_URL: http://gotenberg:3000
       DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
       DB_POSTGRESDB_USER: ${POSTGRES_USER}
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
@@ -56,9 +59,67 @@ services:
       - n8n_data:/home/node/.n8n
       - ./workflows:/workflows:ro
 
+  # Host-network variant of the n8n service. Runs with network_mode: host so it
+  # reaches postgres/gotenberg over localhost (both publish their ports above).
+  # Note: shares the n8n_data volume and binds port 5678, so run either `n8n` or
+  # `n8n-host` — not both at once.
+  #
+  # Gotcha: the Postgres *nodes* in the workflows use a stored n8n credential
+  # ("postgres-main"), NOT the DB_POSTGRESDB_HOST env var below. That credential's
+  # host is set in the n8n UI (encrypted in the n8n_data volume, not in these
+  # files). Under host mode it must be `localhost`; under the bridge `n8n` service
+  # it must be `postgres`. A credential holds only one host, so pick the mode you
+  # actually run and set it accordingly.
+  n8n-host:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    network_mode: "host"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gotenberg:
+        condition: service_started
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: localhost
+      DB_POSTGRESDB_PORT: 5432
+      GOTENBERG_URL: http://localhost:3000
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      N8N_SECURE_COOKIE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      GENERIC_TIMEZONE: America/New_York
+      TZ: America/New_York
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY}
+      FRED_API_KEY: ${FRED_API_KEY}
+      EIA_API_KEY: ${EIA_API_KEY}
+      MARKETAUX_API_KEY: ${MARKETAUX_API_KEY}
+      FMP_API_KEY: ${FMP_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      DISCORD_WEBHOOK_URL_NQ: ${DISCORD_WEBHOOK_URL_NQ}
+      DISCORD_WEBHOOK_URL_METALS: ${DISCORD_WEBHOOK_URL_METALS}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/workflows:ro
+
   gotenberg:
     image: gotenberg/gotenberg:8
     restart: unless-stopped
+    ports:
+      - "3000:3000"
     command:
       - "gotenberg"
       - "--api-port=3000"
