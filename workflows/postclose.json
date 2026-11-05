@@ -12,13 +12,13 @@
           ]
         }
       },
-      "id": "11111111-1111-1111-1111-111111111111",
+      "id": "19b11d1e-80c4-45f1-9fa9-051c1d3a431a",
       "name": "Schedule 17:45 ET",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
-        200,
-        300
+        -2208,
+        224
       ]
     },
     {
@@ -47,13 +47,13 @@
         },
         "options": {}
       },
-      "id": "22222222-2222-2222-2222-222222222222",
+      "id": "947843b9-9eae-4a9c-bade-af6d3361f487",
       "name": "Config",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        400,
-        300
+        -2000,
+        224
       ]
     },
     {
@@ -62,53 +62,50 @@
         "query": "SELECT external_id FROM seen_items WHERE seen_at > NOW() - INTERVAL '7 days'",
         "options": {}
       },
-      "id": "44444444-4444-4444-4444-444444444444",
+      "id": "80951afe-4984-4719-a9a8-1c125e04d32d",
       "name": "Load Seen IDs",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        600,
-        300
+        -1808,
+        224
       ],
       "alwaysOutputData": true,
       "credentials": {
         "postgres": {
-          "id": "postgres-main",
-          "name": "Postgres (n8n DB)"
+          "id": "V6vZ5XG9MJC0SNLx",
+          "name": "Postgres account"
         }
       }
     },
     {
       "parameters": {
-        "language": "javaScript",
-        "jsCode": "// Fetch all sources in parallel, return normalized items.\nconst cfg = $('Config').first().json;\nconst runType = cfg.runType;\nlet tickers = cfg.tickers.split(',');\nconst windowMs = cfg.windowHours * 3600 * 1000;\nconst now = Date.now();\nconst since = now - windowMs;\nconst todayISO = new Date(now).toISOString().slice(0, 10);\n\nconst FINNHUB = $env.FINNHUB_API_KEY;\nconst FRED = $env.FRED_API_KEY;\nconst EIA = $env.EIA_API_KEY;\nconst MARKETAUX = $env.MARKETAUX_API_KEY;\nconst SEC_UA = 'nq-digest hunter547@gmail.com';\n\nlet CIK = {\n  AAPL: '0000320193', MSFT: '0000789019', NVDA: '0001045810',\n  AMZN: '0001018724', META: '0001326801', GOOGL: '0001652044',\n  GOOG: '0001652044', AVGO: '0001730168', TSLA: '0001318605',\n  COST: '0000909832'\n};\n\nconst helpers = this.helpers;\nasync function safeFetch(url, opts = {}) {\n  try {\n    return await helpers.httpRequest({ method: 'GET', url, headers: opts.headers || {}, json: true, timeout: 15000 });\n  } catch (e) { return null; }\n}\n\nasync function ndxTop10() {\n  let html;\n  try {\n    html = await helpers.httpRequest({ method: 'GET', url: 'https://stockanalysis.com/list/nasdaq-100-stocks/', headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 15000, json: false });\n  } catch (e) { return { list: [], cikMap: {} }; }\n  if (typeof html !== 'string' || !html.length) return { list: [], cikMap: {} };\n  const rows = [];\n  const re = /s:\"([A-Z.]{1,6})\",n:\"([^\"]+)\",marketCap:(\\d+)/g;\n  let m;\n  while ((m = re.exec(html)) !== null) {\n    rows.push({ symbol: m[1], name: m[2], marketCap: Number(m[3]) });\n  }\n  if (rows.length < 10) return { list: [], cikMap: {} };\n  rows.sort((a, b) => b.marketCap - a.marketCap);\n  const totalMc = rows.reduce((s, r) => s + r.marketCap, 0);\n  const list = rows.slice(0, 10).map((r, idx) => ({\n    symbol: r.symbol,\n    name: r.name,\n    weight: (r.marketCap / totalMc) * 100,\n    rank: idx + 1,\n    marketCap: r.marketCap\n  }));\n  return { list, cikMap: {} };\n}\n\nconst _ndxData = await ndxTop10();\nif (_ndxData.list.length === 10) {\n  tickers = _ndxData.list.map(t => t.symbol);\n  if (Object.keys(_ndxData.cikMap).length) CIK = _ndxData.cikMap;\n}\nconst top10List = _ndxData.list;\n\nasync function tickerQuotes() {\n  if (!top10List.length) return [];\n  const out = [];\n  await Promise.all(top10List.map(async (t) => {\n    const j = await safeFetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(t.symbol)}?range=2d&interval=1d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });\n    const r = j?.chart?.result?.[0];\n    if (!r) return;\n    const meta = r.meta || {};\n    const last = meta.regularMarketPrice;\n    const prev = meta.chartPreviousClose ?? meta.previousClose;\n    if (last == null) return;\n    const pct = (prev && prev !== 0) ? ((last - prev) / prev * 100) : null;\n    out.push({\n      source: 'ndx_top10',\n      external_id: `top10_${t.symbol}_${todayISO}_${runType}`,\n      category: 'top10',\n      ticker: t.symbol,\n      title: `${t.symbol} ${t.name}: $${Number(last).toFixed(2)}${pct !== null ? ` (${pct.toFixed(2)}%)` : ''}`,\n      body: `Weight ${t.weight.toFixed(2)}% | Rank #${t.rank} | Prev close $${prev != null ? Number(prev).toFixed(2) : 'n/a'}`,\n      ts: new Date((meta.regularMarketTime || Math.floor(Date.now()/1000)) * 1000).toISOString(),\n      url: `https://finance.yahoo.com/quote/${encodeURIComponent(t.symbol)}`,\n      rank: t.rank,\n      weight: t.weight,\n      price: last,\n      prevClose: prev,\n      pct,\n      name: t.name\n    });\n  }));\n  return out.sort((a, b) => a.rank - b.rank);\n}\n\nasync function tickerNews() {\n  if (!FINNHUB || !top10List.length) return [];\n  const fromISO = new Date(now - 2 * 86400000).toISOString().slice(0, 10);\n  const toISO = new Date(now).toISOString().slice(0, 10);\n  const out = [];\n  await Promise.all(top10List.map(async (t) => {\n    const j = await safeFetch(`https://finnhub.io/api/v1/company-news?symbol=${t.symbol}&from=${fromISO}&to=${toISO}&token=${FINNHUB}`);\n    if (!Array.isArray(j)) return;\n    for (const n of j.slice(0, 3)) {\n      if (!n.headline) continue;\n      out.push({\n        source: 'finnhub_company_news',\n        external_id: `${t.symbol}_${n.id}`,\n        category: 'news',\n        ticker: t.symbol,\n        title: n.headline,\n        body: (n.summary || '').slice(0, 280),\n        ts: new Date(n.datetime * 1000).toISOString(),\n        url: n.url\n      });\n    }\n  }));\n  return out;\n}\n\nasync function earningsCal() {\n  if (!FINNHUB) return [];\n  const fromISO = new Date(now - 86400000).toISOString().slice(0, 10);\n  const toISO = new Date(now + 3 * 86400000).toISOString().slice(0, 10);\n  const j = await safeFetch(`https://finnhub.io/api/v1/calendar/earnings?from=${fromISO}&to=${toISO}&token=${FINNHUB}`);\n  if (!j?.earningsCalendar) return [];\n  return j.earningsCalendar.filter(e => tickers.includes(e.symbol)).map(e => ({\n    source: 'finnhub_earnings',\n    external_id: `${e.symbol}_${e.date}_${e.hour}`,\n    category: 'earnings',\n    ticker: e.symbol,\n    title: `${e.symbol} earnings ${e.hour === 'bmo' ? 'pre-market' : e.hour === 'amc' ? 'after-close' : e.date}`,\n    body: `EPS est ${e.epsEstimate ?? 'n/a'}, rev est ${e.revenueEstimate ?? 'n/a'}. Actual EPS ${e.epsActual ?? 'pending'}, actual rev ${e.revenueActual ?? 'pending'}.`,\n    ts: e.date,\n    url: `https://finance.yahoo.com/quote/${e.symbol}`\n  }));\n}\n\nasync function edgarFilings() {\n  const out = [];\n  for (const [ticker, cik] of Object.entries(CIK)) {\n    if (!tickers.includes(ticker)) continue;\n    const j = await safeFetch(`https://data.sec.gov/submissions/CIK${cik}.json`, { headers: { 'User-Agent': SEC_UA, 'Accept': 'application/json' } });\n    if (!j?.filings?.recent) continue;\n    const r = j.filings.recent;\n    const edgarSince = now - 5 * 86400000;\n    for (let i = 0; i < r.form.length && i < 30; i++) {\n      if (r.form[i] !== '8-K') continue;\n      const filedAt = new Date(r.filingDate[i]).getTime();\n      if (filedAt < edgarSince) continue;\n      const accNo = r.accessionNumber[i].replace(/-/g, '');\n      out.push({\n        source: 'sec_edgar', external_id: r.accessionNumber[i], category: 'earnings', ticker,\n        title: `${ticker} 8-K filed ${r.filingDate[i]}`,\n        body: r.primaryDocDescription[i] || '8-K filing',\n        ts: r.filingDate[i],\n        url: `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${accNo}/${r.primaryDocument[i]}`\n      });\n    }\n  }\n  return out;\n}\n\nasync function fredReleases() {\n  if (!FRED) return [];\n  const series = ['CPIAUCSL', 'PCEPI', 'PAYEMS', 'UNRATE', 'FEDFUNDS', 'GDPC1'];\n  const out = [];\n  for (const s of series) {\n    const j = await safeFetch(`https://api.stlouisfed.org/fred/series/observations?series_id=${s}&api_key=${FRED}&file_type=json&sort_order=desc&limit=2`);\n    if (!j?.observations?.length) continue;\n    const o = j.observations[0]; const prev = j.observations[1];\n    out.push({\n      source: 'fred', external_id: `${s}_${o.date}`, category: 'macro', ticker: null,\n      title: `${s}: ${o.value} (as of ${o.date})`,\n      body: prev ? `Prev ${prev.value} on ${prev.date}` : '',\n      ts: o.date, url: `https://fred.stlouisfed.org/series/${s}`\n    });\n  }\n  return out;\n}\n\nasync function treasuryAuctions() {\n  const j = await safeFetch('https://www.treasurydirect.gov/TA_WS/securities/announced?format=json');\n  if (!Array.isArray(j)) return [];\n  return j.slice(0, 8).map(a => ({\n    source: 'treasury', external_id: a.cusip, category: 'macro', ticker: null,\n    title: `Treasury auction: ${a.securityType} ${a.securityTerm} on ${a.auctionDate}`,\n    body: `Issue ${a.issueDate}, offering ${a.offeringAmount || 'TBA'}`,\n    ts: a.auctionDate, url: 'https://www.treasurydirect.gov/auctions/upcoming/'\n  }));\n}\n\nasync function eiaPetroleum() {\n  if (!EIA) return [];\n  const url = `https://api.eia.gov/v2/petroleum/stoc/wstk/data/?api_key=${EIA}&frequency=weekly&data[0]=value&facets[duoarea][]=NUS&sort[0][column]=period&sort[0][direction]=desc&length=200`;\n  const j = await safeFetch(url);\n  const rows = j?.response?.data;\n  if (!rows?.length) return [];\n  const KEY = /^U\\.S\\. Ending Stocks of (Crude Oil( and Lease Condensate)?|(Total )?(Motor )?Gasoline|Distillate Fuel Oil)$/i;\n  const seen = new Set();\n  return rows\n    .filter(r => KEY.test(r['series-description']))\n    .filter(r => { const k = r['series-description']; if (seen.has(k)) return false; seen.add(k); return true; })\n    .slice(0, 4)\n    .map(r => ({\n      source: 'eia', external_id: `${r['series-description']}_${r.period}`, category: 'cross_asset', ticker: null,\n      title: `EIA: ${r['series-description']} ${r.period}`,\n      body: `${r.value} ${r.units}`,\n      ts: r.period, url: 'https://www.eia.gov/petroleum/supply/weekly/'\n    }));\n}\n\nconst NEWS_RELEVANT = /\\b(apple|aapl|microsoft|msft|nvidia|nvda|amazon|amzn|meta|alphabet|google|googl|broadcom|avgo|tesla|tsla|costco|cost|netflix|nflx|fed|fomc|powell|rate (cut|hike|decision)|interest rate|inflation|cpi|pce|jobs report|payroll|nonfarm|unemployment|gdp|treasury yield|10-year|nasdaq|qqq|s&p ?500|spx|spy|futures|crude|opec|wti|brent|natural gas|semiconductor|chip(s|maker)|ai (chip|stock|boom|trade)|tariff|trade war|china (trade|export|chip)|sanction|recession|dollar index|dxy|vix|earnings (beat|miss|guidance|outlook)|guidance (cut|raised)|hawkish|dovish|fed minutes|jackson hole|debt ceiling|government shutdown)\\b/i;\nasync function finnhubNews() {\n  if (!FINNHUB) return [];\n  const j = await safeFetch(`https://finnhub.io/api/v1/news?category=general&token=${FINNHUB}`);\n  if (!Array.isArray(j)) return [];\n  return j\n    .filter(n => n.datetime * 1000 >= since)\n    .filter(n => NEWS_RELEVANT.test((n.headline || '') + ' ' + (n.summary || '')))\n    .slice(0, 20)\n    .map(n => ({\n      source: 'finnhub_news', external_id: String(n.id), category: 'news', ticker: null,\n      title: n.headline, body: n.summary || '',\n      ts: new Date(n.datetime * 1000).toISOString(), url: n.url\n    }));\n}\n\nasync function marketauxNews() {\n  if (!MARKETAUX) return [];\n  const url = `https://api.marketaux.com/v1/news/all?countries=us&language=en&published_after=${new Date(since).toISOString()}&api_token=${MARKETAUX}&limit=20`;\n  const j = await safeFetch(url);\n  if (!j?.data) return [];\n  return j.data.map(n => ({\n    source: 'marketaux', external_id: n.uuid, category: 'news',\n    ticker: (n.entities || []).map(e => e.symbol).filter(Boolean).join(',') || null,\n    title: n.title, body: n.description || '',\n    ts: n.published_at, url: n.url\n  }));\n}\n\nasync function forexFactory() {\n  const urls = ['https://nfs.faireconomy.media/ff_calendar_thisweek.json', 'https://nfs.faireconomy.media/ff_calendar_nextweek.json'];\n  const results = await Promise.all(urls.map(u => safeFetch(u)));\n  const events = results.flatMap(r => Array.isArray(r) ? r : []);\n  if (!events.length) return [];\n  const cutoff = now + 5 * 86400000;\n  return events\n    .filter(e => e.country === 'USD' && e.impact === 'High')\n    .filter(e => { const t = new Date(e.date).getTime(); return !isNaN(t) && t >= now && t <= cutoff; })\n    .map(e => ({\n      source: 'forexfactory',\n      external_id: `ff_${e.title}_${e.date}`,\n      category: 'econ_calendar',\n      ticker: null,\n      title: e.title,\n      body: `Impact: ${e.impact} | Forecast: ${e.forecast || 'n/a'} | Prev: ${e.previous || 'n/a'}`,\n      ts: e.date,\n      url: 'https://www.forexfactory.com/calendar',\n      impact: e.impact,\n      forecast: e.forecast || null,\n      previous: e.previous || null,\n      eventDate: e.date\n    }));\n}\n\nasync function yahooQuotes() {\n  const symbols = ['^VIX', '^VVIX', 'DX-Y.NYB', '^TNX', 'NQ=F', 'ES=F'];\n  const out = [];\n  await Promise.all(symbols.map(async (sym) => {\n    const j = await safeFetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=2d&interval=1d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });\n    const r = j?.chart?.result?.[0];\n    if (!r) return;\n    const meta = r.meta || {};\n    const last = meta.regularMarketPrice;\n    const prev = meta.chartPreviousClose ?? meta.previousClose;\n    if (last == null) return;\n    const pct = (prev && prev !== 0) ? ((last - prev) / prev * 100) : null;\n    const name = meta.shortName || meta.longName || sym;\n    out.push({\n      source: 'yahoo', external_id: `${sym}_${todayISO}_${runType}`, category: 'cross_asset', ticker: sym,\n      title: `${name}: ${Number(last).toFixed(2)}${pct !== null ? ` (${pct.toFixed(2)}%)` : ''}`,\n      body: `Prev close ${prev != null ? Number(prev).toFixed(2) : 'n/a'}.`,\n      ts: new Date((meta.regularMarketTime || Math.floor(Date.now()/1000)) * 1000).toISOString(),\n      url: `https://finance.yahoo.com/quote/${encodeURIComponent(sym)}`\n    });\n  }));\n  return out;\n}\n\nconst results = await Promise.allSettled([earningsCal(), edgarFilings(), fredReleases(), treasuryAuctions(), eiaPetroleum(), finnhubNews(), marketauxNews(), yahooQuotes(), forexFactory(), tickerQuotes(), tickerNews()]);\nconst items = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);\nreturn items.map(json => ({ json }));\n"
+        "jsCode": "// Fetch all sources in parallel, return normalized items.\nconst cfg = $('Config').first().json;\nconst runType = cfg.runType;\nlet tickers = cfg.tickers.split(',');\nconst windowMs = cfg.windowHours * 3600 * 1000;\nconst now = Date.now();\nconst since = now - windowMs;\nconst todayISO = new Date(now).toISOString().slice(0, 10);\n\nconst FINNHUB = $env.FINNHUB_API_KEY;\nconst FRED = $env.FRED_API_KEY;\nconst EIA = $env.EIA_API_KEY;\nconst MARKETAUX = $env.MARKETAUX_API_KEY;\nconst SEC_UA = 'nq-digest hunter547@gmail.com';\n\nlet CIK = {\n  AAPL: '0000320193', MSFT: '0000789019', NVDA: '0001045810',\n  AMZN: '0001018724', META: '0001326801', GOOGL: '0001652044',\n  GOOG: '0001652044', AVGO: '0001730168', TSLA: '0001318605',\n  COST: '0000909832'\n};\n\nconst helpers = this.helpers;\nasync function safeFetch(url, opts = {}) {\n  try {\n    return await helpers.httpRequest({ method: 'GET', url, headers: opts.headers || {}, json: true, timeout: 15000 });\n  } catch (e) { return null; }\n}\n\nasync function ndxTop10() {\n  const empty = { list: [], cikMap: {} };\n  const cleanName = (s) => String(s || '')\n    .replace(/\\s+(Class [A-Z] )?(Common Stock|Capital Stock|Ordinary Shares|American Depositary Shares?|Depositary Shares?)\\b.*$/i, '')\n    .trim();\n  const toList = (rows) => {\n    rows = rows.filter(r => r.symbol && Number.isFinite(r.marketCap) && r.marketCap > 0);\n    if (rows.length < 10) return null;\n    rows.sort((a, b) => b.marketCap - a.marketCap);\n    const totalMc = rows.reduce((s, r) => s + r.marketCap, 0);\n    return rows.slice(0, 10).map((r, idx) => ({\n      symbol: r.symbol,\n      name: r.name,\n      weight: (r.marketCap / totalMc) * 100,\n      rank: idx + 1,\n      marketCap: r.marketCap\n    }));\n  };\n\n  // Primary: Nasdaq's own Nasdaq-100 list API (JSON, includes market caps).\n  try {\n    const j = await helpers.httpRequest({ method: 'GET', url: 'https://api.nasdaq.com/api/quote/list-type/nasdaq100', headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }, timeout: 15000, json: true });\n    const rows = (j?.data?.data?.rows || []).map(r => ({\n      symbol: String(r.symbol || '').trim().toUpperCase(),\n      name: cleanName(r.companyName),\n      marketCap: Number(String(r.marketCap || '').replace(/[^0-9.]/g, ''))\n    }));\n    const list = toList(rows);\n    if (list) return { list, cikMap: {} };\n  } catch (e) { /* fall through */ }\n\n  // Fallback: stockanalysis.com scrape (often blocked by Cloudflare bot checks).\n  try {\n    const html = await helpers.httpRequest({ method: 'GET', url: 'https://stockanalysis.com/list/nasdaq-100-stocks/', headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 15000, json: false });\n    if (typeof html === 'string' && html.length) {\n      const rows = [];\n      const re = /s:\"([A-Z.]{1,6})\",n:\"([^\"]+)\",marketCap:(\\d+)/g;\n      let m;\n      while ((m = re.exec(html)) !== null) rows.push({ symbol: m[1], name: m[2], marketCap: Number(m[3]) });\n      const list = toList(rows);\n      if (list) return { list, cikMap: {} };\n    }\n  } catch (e) { /* fall through */ }\n\n  return empty;\n}\n\nconst _ndxData = await ndxTop10();\nif (_ndxData.list.length === 10) {\n  tickers = _ndxData.list.map(t => t.symbol);\n  if (Object.keys(_ndxData.cikMap).length) CIK = _ndxData.cikMap;\n}\nconst top10List = _ndxData.list;\n\nasync function tickerQuotes() {\n  if (!top10List.length) return [];\n  const out = [];\n  await Promise.all(top10List.map(async (t) => {\n    const j = await safeFetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(t.symbol)}?range=2d&interval=1d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });\n    const r = j?.chart?.result?.[0];\n    if (!r) return;\n    const meta = r.meta || {};\n    const last = meta.regularMarketPrice;\n    const prev = meta.chartPreviousClose ?? meta.previousClose;\n    if (last == null) return;\n    const pct = (prev && prev !== 0) ? ((last - prev) / prev * 100) : null;\n    out.push({\n      source: 'ndx_top10',\n      external_id: `top10_${t.symbol}_${todayISO}_${runType}`,\n      category: 'top10',\n      ticker: t.symbol,\n      title: `${t.symbol} ${t.name}: $${Number(last).toFixed(2)}${pct !== null ? ` (${pct.toFixed(2)}%)` : ''}`,\n      body: `Weight ${t.weight.toFixed(2)}% | Rank #${t.rank} | Prev close $${prev != null ? Number(prev).toFixed(2) : 'n/a'}`,\n      ts: new Date((meta.regularMarketTime || Math.floor(Date.now()/1000)) * 1000).toISOString(),\n      url: `https://finance.yahoo.com/quote/${encodeURIComponent(t.symbol)}`,\n      rank: t.rank,\n      weight: t.weight,\n      price: last,\n      prevClose: prev,\n      pct,\n      name: t.name\n    });\n  }));\n  return out.sort((a, b) => a.rank - b.rank);\n}\n\nasync function tickerNews() {\n  if (!FINNHUB || !top10List.length) return [];\n  const fromISO = new Date(now - 2 * 86400000).toISOString().slice(0, 10);\n  const toISO = new Date(now).toISOString().slice(0, 10);\n  const out = [];\n  await Promise.all(top10List.map(async (t) => {\n    const j = await safeFetch(`https://finnhub.io/api/v1/company-news?symbol=${t.symbol}&from=${fromISO}&to=${toISO}&token=${FINNHUB}`);\n    if (!Array.isArray(j)) return;\n    for (const n of j.slice(0, 3)) {\n      if (!n.headline) continue;\n      out.push({\n        source: 'finnhub_company_news',\n        external_id: `${t.symbol}_${n.id}`,\n        category: 'news',\n        ticker: t.symbol,\n        title: n.headline,\n        body: (n.summary || '').slice(0, 280),\n        ts: new Date(n.datetime * 1000).toISOString(),\n        url: n.url\n      });\n    }\n  }));\n  return out;\n}\n\nasync function earningsCal() {\n  if (!FINNHUB) return [];\n  const fromISO = new Date(now - 86400000).toISOString().slice(0, 10);\n  const toISO = new Date(now + 3 * 86400000).toISOString().slice(0, 10);\n  const j = await safeFetch(`https://finnhub.io/api/v1/calendar/earnings?from=${fromISO}&to=${toISO}&token=${FINNHUB}`);\n  if (!j?.earningsCalendar) return [];\n  return j.earningsCalendar.filter(e => tickers.includes(e.symbol)).map(e => ({\n    source: 'finnhub_earnings',\n    external_id: `${e.symbol}_${e.date}_${e.hour}`,\n    category: 'earnings',\n    ticker: e.symbol,\n    title: `${e.symbol} earnings ${e.hour === 'bmo' ? 'pre-market' : e.hour === 'amc' ? 'after-close' : e.date}`,\n    body: `EPS est ${e.epsEstimate ?? 'n/a'}, rev est ${e.revenueEstimate ?? 'n/a'}. Actual EPS ${e.epsActual ?? 'pending'}, actual rev ${e.revenueActual ?? 'pending'}.`,\n    ts: e.date,\n    url: `https://finance.yahoo.com/quote/${e.symbol}`\n  }));\n}\n\nasync function edgarFilings() {\n  const out = [];\n  for (const [ticker, cik] of Object.entries(CIK)) {\n    if (!tickers.includes(ticker)) continue;\n    const j = await safeFetch(`https://data.sec.gov/submissions/CIK${cik}.json`, { headers: { 'User-Agent': SEC_UA, 'Accept': 'application/json' } });\n    if (!j?.filings?.recent) continue;\n    const r = j.filings.recent;\n    const edgarSince = now - 5 * 86400000;\n    for (let i = 0; i < r.form.length && i < 30; i++) {\n      if (r.form[i] !== '8-K') continue;\n      const filedAt = new Date(r.filingDate[i]).getTime();\n      if (filedAt < edgarSince) continue;\n      const accNo = r.accessionNumber[i].replace(/-/g, '');\n      out.push({\n        source: 'sec_edgar', external_id: r.accessionNumber[i], category: 'earnings', ticker,\n        title: `${ticker} 8-K filed ${r.filingDate[i]}`,\n        body: r.primaryDocDescription[i] || '8-K filing',\n        ts: r.filingDate[i],\n        url: `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${accNo}/${r.primaryDocument[i]}`\n      });\n    }\n  }\n  return out;\n}\n\nasync function fredReleases() {\n  if (!FRED) return [];\n  const series = ['CPIAUCSL', 'PCEPI', 'PAYEMS', 'UNRATE', 'FEDFUNDS', 'GDPC1'];\n  const out = [];\n  for (const s of series) {\n    const j = await safeFetch(`https://api.stlouisfed.org/fred/series/observations?series_id=${s}&api_key=${FRED}&file_type=json&sort_order=desc&limit=2`);\n    if (!j?.observations?.length) continue;\n    const o = j.observations[0]; const prev = j.observations[1];\n    out.push({\n      source: 'fred', external_id: `${s}_${o.date}`, category: 'macro', ticker: null,\n      title: `${s}: ${o.value} (as of ${o.date})`,\n      body: prev ? `Prev ${prev.value} on ${prev.date}` : '',\n      ts: o.date, url: `https://fred.stlouisfed.org/series/${s}`\n    });\n  }\n  return out;\n}\n\nasync function treasuryAuctions() {\n  const j = await safeFetch('https://www.treasurydirect.gov/TA_WS/securities/announced?format=json');\n  if (!Array.isArray(j)) return [];\n  return j.slice(0, 8).map(a => ({\n    source: 'treasury', external_id: a.cusip, category: 'macro', ticker: null,\n    title: `Treasury auction: ${a.securityType} ${a.securityTerm} on ${a.auctionDate}`,\n    body: `Issue ${a.issueDate}, offering ${a.offeringAmount || 'TBA'}`,\n    ts: a.auctionDate, url: 'https://www.treasurydirect.gov/auctions/upcoming/'\n  }));\n}\n\nasync function eiaPetroleum() {\n  if (!EIA) return [];\n  const url = `https://api.eia.gov/v2/petroleum/stoc/wstk/data/?api_key=${EIA}&frequency=weekly&data[0]=value&facets[duoarea][]=NUS&sort[0][column]=period&sort[0][direction]=desc&length=200`;\n  const j = await safeFetch(url);\n  const rows = j?.response?.data;\n  if (!rows?.length) return [];\n  const KEY = /^U\\.S\\. Ending Stocks of (Crude Oil( and Lease Condensate)?|(Total )?(Motor )?Gasoline|Distillate Fuel Oil)$/i;\n  const seen = new Set();\n  return rows\n    .filter(r => KEY.test(r['series-description']))\n    .filter(r => { const k = r['series-description']; if (seen.has(k)) return false; seen.add(k); return true; })\n    .slice(0, 4)\n    .map(r => ({\n      source: 'eia', external_id: `${r['series-description']}_${r.period}`, category: 'cross_asset', ticker: null,\n      title: `EIA: ${r['series-description']} ${r.period}`,\n      body: `${r.value} ${r.units}`,\n      ts: r.period, url: 'https://www.eia.gov/petroleum/supply/weekly/'\n    }));\n}\n\nconst NEWS_RELEVANT = /\\b(apple|aapl|microsoft|msft|nvidia|nvda|amazon|amzn|meta|alphabet|google|googl|broadcom|avgo|tesla|tsla|costco|cost|netflix|nflx|fed|fomc|powell|rate (cut|hike|decision)|interest rate|inflation|cpi|pce|jobs report|payroll|nonfarm|unemployment|gdp|treasury yield|10-year|nasdaq|qqq|s&p ?500|spx|spy|futures|crude|opec|wti|brent|natural gas|semiconductor|chip(s|maker)|ai (chip|stock|boom|trade)|tariff|trade war|china (trade|export|chip)|sanction|recession|dollar index|dxy|vix|earnings (beat|miss|guidance|outlook)|guidance (cut|raised)|hawkish|dovish|fed minutes|jackson hole|debt ceiling|government shutdown)\\b/i;\nasync function finnhubNews() {\n  if (!FINNHUB) return [];\n  const j = await safeFetch(`https://finnhub.io/api/v1/news?category=general&token=${FINNHUB}`);\n  if (!Array.isArray(j)) return [];\n  return j\n    .filter(n => n.datetime * 1000 >= since)\n    .filter(n => NEWS_RELEVANT.test((n.headline || '') + ' ' + (n.summary || '')))\n    .slice(0, 20)\n    .map(n => ({\n      source: 'finnhub_news', external_id: String(n.id), category: 'news', ticker: null,\n      title: n.headline, body: n.summary || '',\n      ts: new Date(n.datetime * 1000).toISOString(), url: n.url\n    }));\n}\n\nasync function marketauxNews() {\n  if (!MARKETAUX) return [];\n  const url = `https://api.marketaux.com/v1/news/all?countries=us&language=en&published_after=${new Date(since).toISOString()}&api_token=${MARKETAUX}&limit=20`;\n  const j = await safeFetch(url);\n  if (!j?.data) return [];\n  return j.data.map(n => ({\n    source: 'marketaux', external_id: n.uuid, category: 'news',\n    ticker: (n.entities || []).map(e => e.symbol).filter(Boolean).join(',') || null,\n    title: n.title, body: n.description || '',\n    ts: n.published_at, url: n.url\n  }));\n}\n\nasync function forexFactory() {\n  const urls = ['https://nfs.faireconomy.media/ff_calendar_thisweek.json', 'https://nfs.faireconomy.media/ff_calendar_nextweek.json'];\n  const results = await Promise.all(urls.map(u => safeFetch(u)));\n  const events = results.flatMap(r => Array.isArray(r) ? r : []);\n  if (!events.length) return [];\n  const cutoff = now + 5 * 86400000;\n  return events\n    .filter(e => e.country === 'USD' && e.impact === 'High')\n    .filter(e => { const t = new Date(e.date).getTime(); return !isNaN(t) && t >= now && t <= cutoff; })\n    .map(e => ({\n      source: 'forexfactory',\n      external_id: `ff_${e.title}_${e.date}`,\n      category: 'econ_calendar',\n      ticker: null,\n      title: e.title,\n      body: `Impact: ${e.impact} | Forecast: ${e.forecast || 'n/a'} | Prev: ${e.previous || 'n/a'}`,\n      ts: e.date,\n      url: 'https://www.forexfactory.com/calendar',\n      impact: e.impact,\n      forecast: e.forecast || null,\n      previous: e.previous || null,\n      eventDate: e.date\n    }));\n}\n\nasync function yahooQuotes() {\n  const symbols = ['^VIX', '^VVIX', 'DX-Y.NYB', '^TNX', 'NQ=F', 'ES=F'];\n  const out = [];\n  await Promise.all(symbols.map(async (sym) => {\n    const j = await safeFetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=2d&interval=1d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });\n    const r = j?.chart?.result?.[0];\n    if (!r) return;\n    const meta = r.meta || {};\n    const last = meta.regularMarketPrice;\n    const prev = meta.chartPreviousClose ?? meta.previousClose;\n    if (last == null) return;\n    const pct = (prev && prev !== 0) ? ((last - prev) / prev * 100) : null;\n    const name = meta.shortName || meta.longName || sym;\n    out.push({\n      source: 'yahoo', external_id: `${sym}_${todayISO}_${runType}`, category: 'cross_asset', ticker: sym,\n      title: `${name}: ${Number(last).toFixed(2)}${pct !== null ? ` (${pct.toFixed(2)}%)` : ''}`,\n      body: `Prev close ${prev != null ? Number(prev).toFixed(2) : 'n/a'}.`,\n      ts: new Date((meta.regularMarketTime || Math.floor(Date.now()/1000)) * 1000).toISOString(),\n      url: `https://finance.yahoo.com/quote/${encodeURIComponent(sym)}`\n    });\n  }));\n  return out;\n}\n\nconst results = await Promise.allSettled([earningsCal(), edgarFilings(), fredReleases(), treasuryAuctions(), eiaPetroleum(), finnhubNews(), marketauxNews(), yahooQuotes(), forexFactory(), tickerQuotes(), tickerNews()]);\nconst items = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);\nreturn items.map(json => ({ json }));\n"
       },
-      "id": "33333333-3333-3333-3333-333333333333",
+      "id": "9ab89049-14ea-4e4b-8cea-69262ede85c2",
       "name": "Fetch All Sources",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        800,
-        300
+        -1600,
+        224
       ]
     },
     {
       "parameters": {
-        "language": "javaScript",
         "jsCode": "const items = $('Fetch All Sources').all().map(i => i.json);\nconst seen = new Set($('Load Seen IDs').all().map(i => i.json.external_id));\nconst fresh = items.filter(it => !seen.has(it.external_id));\nreturn fresh.map(json => ({ json }));\n"
       },
-      "id": "55555555-5555-5555-5555-555555555555",
+      "id": "38387155-125d-42c1-bea1-8a973ebd389b",
       "name": "Filter Fresh",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1000,
-        300
+        -1408,
+        224
       ]
     },
     {
       "parameters": {
-        "operation": "insert",
         "schema": {
           "__rl": true,
           "value": "public",
@@ -128,40 +125,71 @@
           "matchingColumns": [
             "source",
             "external_id"
-          ]
+          ],
+          "schema": [
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "external_id",
+              "displayName": "external_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "seen_at",
+              "displayName": "seen_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
         },
         "options": {
           "skipOnConflict": true
         }
       },
-      "id": "66666666-6666-6666-6666-666666666666",
+      "id": "cd115d0b-f660-4d47-9158-8f2152fa4a47",
       "name": "Persist Seen",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        1200,
-        300
+        -1200,
+        224
       ],
       "alwaysOutputData": true,
       "credentials": {
         "postgres": {
-          "id": "postgres-main",
-          "name": "Postgres (n8n DB)"
+          "id": "V6vZ5XG9MJC0SNLx",
+          "name": "Postgres account"
         }
       }
     },
     {
       "parameters": {
-        "language": "javaScript",
         "jsCode": "// Build user prompt asking Claude for STRUCTURED JSON.\nconst items = $('Fetch All Sources').all().map(i => i.json);\nconst runType = $('Config').first().json.runType;\n\nconst bucket = (cat) => items.filter(i => i.category === cat).slice(0, 30);\nconst earnings = bucket('earnings');\nconst macro = bucket('macro');\nconst news = bucket('news');\nconst cross = bucket('cross_asset');\nconst top10 = items.filter(i => i.category === 'top10').sort((a, b) => a.rank - b.rank);\nconst econCal = items.filter(i => i.category === 'econ_calendar').slice().sort((a, b) => new Date(a.eventDate) - new Date(b.eventDate));\n\nconst fmt = (arr) => arr.length\n  ? arr.map(i => `- [${i.source}${i.ticker ? ' ' + i.ticker : ''}] ${i.title}${i.body ? ' — ' + i.body.slice(0, 280) : ''}`).join('\\n')\n  : '(none)';\n\nconst fmtEcon = (arr) => arr.length\n  ? arr.map(e => {\n      const t = new Date(e.eventDate);\n      const dStr = t.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' });\n      const tStr = t.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });\n      return `- ${dStr} ${tStr} ET — ${e.title} (forecast: ${e.forecast || 'n/a'}, prev: ${e.previous || 'n/a'})`;\n    }).join('\\n')\n  : '(none in window)';\n\nconst fmtTop10 = (arr) => arr.length\n  ? arr.map(t => `#${t.rank} ${t.ticker} ${t.name || ''}: $${(t.price ?? 0).toFixed(2)} (${t.pct != null ? (t.pct >= 0 ? '+' : '') + t.pct.toFixed(2) + '%' : 'n/a'}) — weight ${t.weight.toFixed(2)}%`).join('\\n')\n  : '(top 10 unavailable)';\n\nconst userPrompt = `You are summarizing market signals for a Nasdaq-100 futures (NQ) trader.\nRun: ${runType.toUpperCase()} (${runType === 'premarket' ? '9:15 ET, before US cash open' : '17:45 ET, after US cash close'}).\n\nReturn ONLY valid JSON matching this exact shape — no preamble, no markdown fences, no commentary:\n{\n  \"earnings\": [\"one-line bullet\", ...],\n  \"macro\": [\"one-line bullet\", ...],\n  \"news\": [\"one-line bullet\", ...],\n  \"cross_asset\": [\"one-line bullet\", ...],\n  \"bias_read\": \"One sentence: net lean for NQ (bullish/bearish/neutral), referencing the top 10 NQ components' direction, and EITHER the single biggest risk OR an imminent (next 24h) high-impact econ release that could shift the read.\"\n}\n\nRules: Each bullet is one line, specific with numbers when given, no fluff, no caveats, no disclaimers. If a category has nothing material, return an empty array. The bias_read MUST be a single sentence and SHOULD reference any high-impact econ release in the next 24h when relevant.\n\n=== NQ TOP 10 BY WEIGHT (current quotes) ===\n${fmtTop10(top10)}\n\n=== EARNINGS ===\n${fmt(earnings)}\n\n=== MACRO ===\n${fmt(macro)}\n\n=== NEWS ===\n${fmt(news)}\n\n=== CROSS-ASSET ===\n${fmt(cross)}\n\n=== UPCOMING USD HIGH-IMPACT DATA (next 5 days, for context only — DO NOT bullet-summarize, but DO factor into bias_read) ===\n${fmtEcon(econCal)}\n`;\n\nreturn [{ json: { userPrompt, runType, itemCount: items.length } }];\n"
       },
-      "id": "77777777-7777-7777-7777-777777777777",
+      "id": "ac116a2d-b111-45fa-afc9-7aa3aa58f361",
       "name": "Build Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1400,
-        300
+        -1008,
+        224
       ]
     },
     {
@@ -192,41 +220,39 @@
           "timeout": 60000
         }
       },
-      "id": "88888888-8888-8888-8888-888888888888",
+      "id": "0ac8c561-f408-4717-b446-0fd7ab93ad92",
       "name": "Claude Summarize",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1600,
-        300
+        -800,
+        224
       ]
     },
     {
       "parameters": {
-        "language": "javaScript",
         "jsCode": "// Parse Claude's JSON response (hardened).\nconst resp = $input.first().json;\nconst text = (resp.content || []).map(c => c.text || '').join('\\n').trim();\nconst tryParse = (s) => { try { return JSON.parse(s); } catch (e) { return null; } };\nconst cleaned = text.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```\\s*$/, '').trim();\nlet parsed = tryParse(cleaned);\nif (!parsed) {\n  const m = cleaned.match(/\\{[\\s\\S]*\\}/);\n  parsed = m ? tryParse(m[0]) : null;\n}\nif (!parsed || typeof parsed !== 'object') parsed = { earnings: [], macro: [], news: [], cross_asset: [], bias_read: '' };\nfor (const k of ['earnings','macro','news','cross_asset']) if (!Array.isArray(parsed[k])) parsed[k] = [];\n\nlet bias = typeof parsed.bias_read === 'string' ? parsed.bias_read.trim() : '';\nif (bias.startsWith('{') || /\"bias_read\"\\s*:/.test(bias)) {\n  const inner = bias.match(/\"bias_read\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"/);\n  try { bias = inner ? JSON.parse('\"' + inner[1] + '\"') : ''; } catch (e) { bias = ''; }\n}\nbias = bias.replace(/\\s+/g, ' ').slice(0, 600);\nparsed.bias_read = bias || '(model returned no bias)';\n\nconst runType = $('Build Prompt').first().json.runType;\nconst itemCount = $('Build Prompt').first().json.itemCount;\nconst items = $('Fetch All Sources').all().map(i => i.json);\nreturn [{ json: { ...parsed, runType, itemCount, items } }];\n"
       },
-      "id": "99999999-9999-9999-9999-999999999999",
+      "id": "5bc9316a-6a88-49a9-981b-9fc36744fae7",
       "name": "Parse Claude",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1800,
-        300
+        -608,
+        224
       ]
     },
     {
       "parameters": {
-        "language": "javaScript",
         "jsCode": "// Build a styled HTML document and emit it as binary for Gotenberg.\nconst d = $input.first().json;\nconst { earnings, macro, news, cross_asset, bias_read, runType, itemCount, items } = d;\n\nconst dt = new Date();\nconst dateStr = dt.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });\nconst dateMono = dt.toLocaleDateString('en-US', { timeZone: 'America/New_York', month: '2-digit', day: '2-digit', year: 'numeric' });\nconst headerLabel = runType === 'premarket' ? 'PRE-MARKET' : 'POST-CLOSE';\nconst timeLabel = runType === 'premarket' ? '9:15 AM ET' : '5:45 PM ET';\nconst issueLabel = runType === 'premarket' ? 'AM EDITION' : 'PM EDITION';\nconst esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');\n\nconst top10Items = items.filter(i => i.category === 'top10').sort((a, b) => a.rank - b.rank);\nlet top10Html = '';\nif (top10Items.length) {\n  const maxWeight = Math.max(...top10Items.map(t => t.weight));\n  top10Html = '<div class=\"holdings\"><table>';\n  for (const t of top10Items) {\n    const barW = ((t.weight / maxWeight) * 60).toFixed(0);\n    const chCls = t.pct == null ? 'flat' : (t.pct >= 0 ? 'up' : 'dn');\n    const arrow = t.pct == null ? '·' : (t.pct >= 0 ? '▲' : '▼');\n    const chSign = t.pct == null ? '' : (t.pct >= 0 ? '+' : '');\n    const chStr = t.pct == null ? 'n/a' : (chSign + t.pct.toFixed(2) + '%');\n    const rankStr = (t.rank < 10 ? '0' : '') + t.rank;\n    top10Html += '<tr>';\n    top10Html += '<td class=\"rank\">' + rankStr + '</td>';\n    top10Html += '<td class=\"ticker\">' + esc(t.ticker) + '</td>';\n    top10Html += '<td class=\"name\">' + esc(t.name || '') + '</td>';\n    top10Html += '<td class=\"weight\"><span class=\"weight-bar\" style=\"width:' + barW + 'px\"></span>' + t.weight.toFixed(2) + '%</td>';\n    top10Html += '<td class=\"price\">$' + (t.price || 0).toFixed(2) + '</td>';\n    top10Html += '<td class=\"change ' + chCls + '\">' + arrow + ' ' + chStr + '</td>';\n    top10Html += '</tr>';\n  }\n  top10Html += '</table></div>';\n}\n\nconst econEvents = items.filter(i => i.category === 'econ_calendar').sort((a, b) => new Date(a.eventDate) - new Date(b.eventDate));\nconst todayKey = dt.toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });\nconst tomorrowKey = new Date(Date.now() + 86400000).toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });\nconst econByDay = {};\nfor (const e of econEvents) {\n  const ed = new Date(e.eventDate);\n  const dayKey = ed.toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });\n  if (!econByDay[dayKey]) {\n    let label, tagCls;\n    if (dayKey === todayKey) { label = 'Today'; tagCls = 'today'; }\n    else if (dayKey === tomorrowKey) { label = 'Tomorrow'; tagCls = 'tomorrow'; }\n    else { label = ed.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'long' }); tagCls = 'future'; }\n    econByDay[dayKey] = {\n      label, tagCls,\n      dayName: ed.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'long' }),\n      dateLabel: ed.toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }),\n      events: []\n    };\n  }\n  econByDay[dayKey].events.push(e);\n}\nlet econSection = '';\nconst econDays = Object.values(econByDay);\nif (econDays.length) {\n  let econHtml = '<div class=\"calendar\">';\n  for (const g of econDays) {\n    econHtml += '<div class=\"cal-day\">';\n    econHtml += '<div class=\"cal-day-header\">';\n    econHtml += '<span class=\"cal-day-tag ' + g.tagCls + '\">' + g.label + '</span>';\n    econHtml += '<span class=\"cal-day-name\">' + esc(g.dayName) + '</span>';\n    econHtml += '<span class=\"cal-day-date\">' + esc(g.dateLabel) + '</span>';\n    econHtml += '</div>';\n    econHtml += '<table>';\n    for (const ev of g.events) {\n      const evDt = new Date(ev.eventDate);\n      const timeStr = evDt.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });\n      const fc = ev.forecast ? 'F ' + esc(ev.forecast) : '—';\n      const pv = ev.previous ? 'P ' + esc(ev.previous) : '—';\n      econHtml += '<tr><td class=\"time\">' + timeStr + '</td><td class=\"event\">' + esc(ev.title) + '</td><td class=\"est\">' + fc + '  /  ' + pv + '</td></tr>';\n    }\n    econHtml += '</table></div>';\n  }\n  econHtml += '</div>';\n  econSection = '<div class=\"section-head\"><h2>Economic Calendar</h2><div class=\"meta\">USD · High Impact · 5 Days</div></div>' + econHtml;\n}\n\nconst SECTIONS = [\n  { label: 'Earnings',    bullets: earnings },\n  { label: 'Macro',       bullets: macro },\n  { label: 'News',        bullets: news },\n  { label: 'Cross-Asset', bullets: cross_asset }\n];\nlet summaryHtml = '<div class=\"summary\">';\nfor (const s of SECTIONS) {\n  if (!s.bullets || !s.bullets.length) continue;\n  summaryHtml += '<div class=\"summary-block\"><h3>' + s.label + '</h3><ul>';\n  for (const b of s.bullets) summaryHtml += '<li>' + esc(b) + '</li>';\n  summaryHtml += '</ul></div>';\n}\nsummaryHtml += '</div>';\n\nconst utcStamp = new Date().toISOString().slice(0,16).replace('T',' ');\n\nconst etTimeStr = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit' });\nconst [etH, etM] = etTimeStr.split(':').map(Number);\nconst etMinutes = etH * 60 + etM;\nconst clockStatus = (openMin, closeMin) => {\n  if (etMinutes < openMin) { const d = openMin - etMinutes; const h = Math.floor(d / 60); const m = d % 60; return { cls: 'pending', text: h ? `in ${h}h ${m}m` : `in ${m}m` }; }\n  if (etMinutes < closeMin) return { cls: 'open', text: 'OPEN' };\n  return { cls: 'closed', text: 'CLOSED' };\n};\nconst nyseStatus = clockStatus(9*60+30, 16*60);\nconst clockHtml = `<section class=\"market-clock\"><div class=\"clock-label\">Cash Open</div><div class=\"clock-items\"><span class=\"clock-item\"><span class=\"clock-name\">NYSE / Nasdaq</span><span class=\"clock-time\">09:30 ET</span><span class=\"clock-status ${nyseStatus.cls}\">${nyseStatus.text}</span></span><span class=\"clock-item subtle\"><span class=\"clock-name\">NQ Futures (Globex)</span><span class=\"clock-time\">~24h electronic</span></span></div></section>`;\n\nconst html = `<!doctype html><html><head><meta charset=\"utf-8\"><title>NQ Futures Daily — ${esc(dateStr)}</title><link rel=\"preconnect\" href=\"https://fonts.googleapis.com\"><link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin><link href=\"https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap\" rel=\"stylesheet\"><style>\n:root { --bg:#FBFAF6; --ink:#1A1A1A; --ink-soft:#3D3D3D; --muted:#767676; --faint:#B5B0A8; --rule:#E5E0D7; --up:#0F7A3F; --down:#B11E26; --accent:#8B1538; }\n@page { size: Letter; margin: 0.62in 0.58in; }\n* { box-sizing: border-box; }\nhtml, body { margin:0; padding:0; background:var(--bg); color:var(--ink); font-family:'Geist',sans-serif; font-size:10pt; line-height:1.5; -webkit-print-color-adjust:exact; print-color-adjust:exact; }\n.masthead { padding-bottom:18px; border-bottom:2px solid var(--ink); }\n.masthead::before { content:\"\"; display:block; height:1px; background:var(--ink); margin-bottom:22px; }\n.masthead .eyebrow { font-size:7pt; font-weight:600; letter-spacing:0.26em; text-transform:uppercase; color:var(--muted); margin-bottom:8px; }\n.masthead h1 { font-family:'Instrument Serif',serif; font-style:italic; font-size:46pt; line-height:1; letter-spacing:-0.02em; margin:0; color:var(--ink); font-weight:400; }\n.masthead .subhead { display:flex; justify-content:space-between; align-items:baseline; margin-top:14px; font-size:8pt; font-weight:600; letter-spacing:0.2em; text-transform:uppercase; color:var(--ink); }\n.masthead .subhead .right { color:var(--muted); font-weight:500; letter-spacing:0.14em; }\n.lede { padding:28px 0 28px; border-bottom:1px solid var(--rule); }\n.lede .label { font-size:7pt; font-weight:700; letter-spacing:0.28em; text-transform:uppercase; color:var(--accent); margin-bottom:14px; }\n.lede .text { font-family:'Instrument Serif',serif; font-size:20pt; line-height:1.32; color:var(--ink); font-weight:400; letter-spacing:-0.005em; max-width:94%; }\n.section-head { display:flex; justify-content:space-between; align-items:baseline; margin:30px 0 14px; padding-bottom:6px; border-bottom:1px solid var(--ink); }\n.section-head h2 { font-size:8pt; font-weight:700; letter-spacing:0.26em; text-transform:uppercase; margin:0; color:var(--ink); }\n.section-head .meta { font-family:'Geist Mono',monospace; font-size:7.5pt; color:var(--muted); letter-spacing:0.04em; }\n.holdings table { width:100%; border-collapse:collapse; font-feature-settings:'tnum'; }\n.holdings tr { border-bottom:1px solid var(--rule); }\n.holdings tr:last-child { border-bottom:0; }\n.holdings td { padding:9px 0; vertical-align:middle; }\n.holdings td.rank { font-family:'Geist Mono',monospace; font-size:7.5pt; color:var(--faint); width:30px; letter-spacing:0.06em; }\n.holdings td.ticker { font-family:'Geist Mono',monospace; font-size:9.5pt; font-weight:600; color:var(--ink); width:64px; letter-spacing:0.02em; }\n.holdings td.name { color:var(--ink-soft); font-size:9.5pt; font-weight:400; }\n.holdings td.weight { font-family:'Geist Mono',monospace; font-size:9pt; color:var(--ink); text-align:right; width:130px; white-space:nowrap; }\n.holdings .weight-bar { display:inline-block; height:1px; background:var(--ink); margin-right:10px; vertical-align:middle; opacity:0.55; }\n.holdings td.price { font-family:'Geist Mono',monospace; font-size:9pt; color:var(--ink); text-align:right; width:78px; }\n.holdings td.change { font-family:'Geist Mono',monospace; font-size:9pt; font-weight:500; text-align:right; width:90px; letter-spacing:-0.01em; }\n.holdings .change.up { color:var(--up); }\n.holdings .change.dn { color:var(--down); }\n.holdings .change.flat { color:var(--faint); }\n.cal-day { padding:16px 0 14px; border-bottom:1px solid var(--rule); }\n.cal-day:last-child { border-bottom:0; padding-bottom:0; }\n.cal-day-header { display:flex; align-items:baseline; gap:14px; margin-bottom:10px; }\n.cal-day-tag { font-size:7pt; font-weight:700; letter-spacing:0.28em; text-transform:uppercase; }\n.cal-day-tag.today { color:var(--accent); }\n.cal-day-tag.tomorrow { color:var(--ink); }\n.cal-day-tag.future { color:var(--faint); }\n.cal-day-name { font-family:'Instrument Serif',serif; font-style:italic; font-size:14pt; color:var(--ink); font-weight:400; }\n.cal-day-date { font-family:'Geist Mono',monospace; font-size:8pt; color:var(--muted); margin-left:auto; }\n.calendar table { width:100%; border-collapse:collapse; font-feature-settings:'tnum'; }\n.calendar td { padding:4px 0; vertical-align:top; }\n.calendar td.time { font-family:'Geist Mono',monospace; font-size:9pt; color:var(--ink); width:64px; padding-right:10px; }\n.calendar td.event { color:var(--ink-soft); font-size:9.5pt; padding-right:12px; }\n.calendar td.est { font-family:'Geist Mono',monospace; font-size:8pt; color:var(--muted); text-align:right; width:140px; white-space:nowrap; }\n.summary-block { margin-bottom:22px; }\n.summary-block:last-child { margin-bottom:0; }\n.summary-block h3 { font-size:7.5pt; font-weight:700; letter-spacing:0.28em; text-transform:uppercase; margin:0 0 10px; color:var(--accent); padding-bottom:6px; border-bottom:1px solid var(--rule); }\n.summary-block ul { list-style:none; padding:0; margin:0; }\n.summary-block li { padding:6px 0 6px 18px; position:relative; font-size:10pt; line-height:1.55; color:var(--ink-soft); }\n.summary-block li::before { content:\"—\"; position:absolute; left:0; top:6px; color:var(--faint); font-family:'Instrument Serif',serif; font-style:italic; }\nfooter { margin-top:36px; padding-top:14px; border-top:1px solid var(--ink); display:flex; justify-content:space-between; font-family:'Geist Mono',monospace; font-size:7pt; color:var(--muted); letter-spacing:0.1em; text-transform:uppercase; }\n.market-clock { display:flex; align-items:baseline; gap:18px; padding:14px 0; border-bottom:1px solid var(--rule); flex-wrap:wrap; }\n.market-clock .clock-label { font-size:7pt; font-weight:700; letter-spacing:0.28em; text-transform:uppercase; color:var(--accent); white-space:nowrap; }\n.market-clock .clock-items { display:flex; gap:18px; flex-wrap:wrap; flex:1; }\n.market-clock .clock-item { display:inline-flex; align-items:baseline; gap:6px; font-size:8.5pt; }\n.market-clock .clock-name { font-family:'Geist Mono',monospace; font-weight:600; color:var(--ink); letter-spacing:0.02em; }\n.market-clock .clock-time { font-family:'Geist Mono',monospace; color:var(--muted); }\n.market-clock .clock-status { font-family:'Geist Mono',monospace; font-size:7pt; font-weight:700; letter-spacing:0.14em; text-transform:uppercase; padding:1px 5px; border:1px solid currentColor; }\n.market-clock .clock-status.open { color:var(--up); }\n.market-clock .clock-status.pending { color:var(--accent); }\n.market-clock .clock-status.closed { color:var(--faint); }\n.market-clock .clock-item.subtle .clock-name { color:var(--muted); font-weight:500; }\n</style></head><body><header class=\"masthead\"><div class=\"eyebrow\">${issueLabel} · ${dateMono.replace(/\\//g,' · ')}</div><h1>NQ Futures Daily</h1><div class=\"subhead\"><span>${headerLabel} — ${timeLabel}</span><span class=\"right\">${esc(dateStr)}</span></div></header>${clockHtml}<section class=\"lede\"><div class=\"label\">Today's Bias</div><div class=\"text\">${esc(bias_read || '—')}</div></section><div class=\"section-head\"><h2>Principal Constituents</h2><div class=\"meta\">By Index Weight · 10 of 100</div></div>${top10Html}${econSection}<div class=\"section-head\"><h2>Daily Brief</h2><div class=\"meta\">${itemCount} signals processed</div></div>${summaryHtml}<footer><span>NQ Futures Daily · ${esc(dateStr)}</span><span>Generated ${utcStamp} UTC</span></footer></body></html>`;\n\nconst pdfName = `NQ-${runType}-${new Date().toISOString().slice(0,10)}`;\nconst discordCaption = `**${headerLabel}**\\n${dateStr}`;\nreturn [{\n  json: { runType, biasRead: bias_read, dateStr, headerLabel, pdfName, itemCount, discordCaption },\n  binary: { indexHtml: { data: Buffer.from(html).toString('base64'), mimeType: 'text/html', fileName: 'index.html' } }\n}];\n"
       },
-      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "id": "769b065d-3bae-4a78-b5db-69aff64773b5",
       "name": "Build PDF HTML",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2000,
-        200
+        -400,
+        128
       ]
     },
     {
@@ -256,20 +282,19 @@
         "options": {
           "response": {
             "response": {
-              "responseFormat": "file",
-              "outputPropertyName": "data"
+              "responseFormat": "file"
             }
           },
           "timeout": 60000
         }
       },
-      "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "id": "c4087623-4cbe-47ca-9c7a-3d57aebd1926",
       "name": "Gotenberg Convert",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2200,
-        200
+        -208,
+        128
       ]
     },
     {
@@ -303,27 +328,26 @@
           "timeout": 60000
         }
       },
-      "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "id": "f75eed55-8a88-4083-9a75-c0e5a777a1b4",
       "name": "Send PDF",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2400,
-        200
+        0,
+        128
       ]
     },
     {
       "parameters": {
-        "language": "javaScript",
         "jsCode": "// Build the short bias-read text message.\nconst d = $input.first().json;\nconst esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst header = d.runType === 'premarket' ? 'PRE-MARKET 9:15 ET' : 'POST-CLOSE 17:45 ET';\nconst dateStr = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', weekday: 'short' });\nconst out = `<b>${esc(header)}</b> — ${esc(dateStr)}\\n<b>Bias:</b> ${esc(d.bias_read || '—')}`;\nconst discord = `**${header}** \\u2014 ${dateStr}\\n**Bias:** ${d.bias_read || '\\u2014'}`;\nreturn [{ json: { text: out, discord } }];\n"
       },
-      "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "id": "27fe6e18-1496-4242-8658-617c088b79b1",
       "name": "Format Bias Read",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2000,
-        400
+        -400,
+        320
       ]
     },
     {
@@ -335,13 +359,13 @@
         "jsonBody": "={\n  \"chat_id\": {{ JSON.stringify($env.TELEGRAM_CHAT_ID) }},\n  \"text\": {{ JSON.stringify($json.text) }},\n  \"parse_mode\": \"HTML\",\n  \"disable_web_page_preview\": true\n}",
         "options": {}
       },
-      "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      "id": "4a905336-1479-45d7-913a-bfbb332153b2",
       "name": "Send Bias Read",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2200,
-        400
+        -208,
+        320
       ]
     },
     {
@@ -367,13 +391,13 @@
           "timeout": 60000
         }
       },
-      "id": "ddccff00-dddd-cccc-ffff-000000000001",
+      "id": "39a9876e-654c-401f-96b9-9f0787f10f08",
       "name": "Send Discord PDF",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2400,
-        80
+        0,
+        0
       ],
       "onError": "continueRegularOutput"
     },
@@ -386,13 +410,13 @@
         "jsonBody": "={\n  \"content\": {{ JSON.stringify($json.discord) }}\n}",
         "options": {}
       },
-      "id": "ddccff00-dddd-cccc-ffff-000000000002",
+      "id": "1c4a2220-d7e4-4140-b484-5b666a6e319f",
       "name": "Send Discord Bias",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2200,
-        560
+        -208,
+        480
       ],
       "onError": "continueRegularOutput"
     }
@@ -548,10 +572,13 @@
   },
   "settings": {
     "executionOrder": "v1",
-    "timezone": "America/New_York"
+    "binaryMode": "separate"
   },
   "tags": [
     {
+      "updatedAt": "2026-05-03T18:07:07.345Z",
+      "createdAt": "2026-05-03T18:07:07.345Z",
+      "id": "ksNDkUxQ6bTPVIJB",
       "name": "nq-digest"
     }
   ]
